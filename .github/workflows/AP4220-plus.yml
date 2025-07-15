@@ -5,8 +5,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: '0 0 * * 0'  # 每周日运行一次，用于更新
+  # schedule:
+  #   - cron: '0 0 * * 0'  # 每周日运行一次，用于更新
 
 jobs:
   build_toolchain:
