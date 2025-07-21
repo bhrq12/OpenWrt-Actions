@@ -1,0 +1,166 @@
+name: OpenWrt Build with Configurable Device
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # schedule:
+  #   - cron: '0 0 * * 0'  # 每周日运行一次，用于更新
+
+jobs:
+  build_toolchain:
+    name: Build Toolchain
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Initialize environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache git libncurses5-dev libssl-dev python3 unzip
+
+    - name: Setup cache for toolchain
+      uses: actions/cache@v3
+      with:
+        path: |
+          ./staging_dir/toolchain-*
+          ./tmp/.buildinfo-toolchain-*
+        key: ${{ runner.os }}-toolchain-${{ hashFiles('**/Makefile', '**/.config', 'config/default.config') }}
+        restore-keys: |
+          ${{ runner.os }}-toolchain-
+
+    - name: Configure OpenWrt for toolchain
+      run: |
+        make defconfig
+        # 禁用不必要的软件包，仅编译工具链
+        sed -i 's/CONFIG_ALL=y/CONFIG_ALL=n/' .config
+        sed -i 's/CONFIG_TOOLCHAIN=y/CONFIG_TOOLCHAIN=y/' .config
+
+    - name: Apply custom configurations (if any)
+      run: |
+        if [ -f "diy-script.sh" ]; then
+          bash diy-script.sh
+        fi
+
+    - name: Build toolchain
+      run: |
+        make toolchain/install -j$(nproc)
+
+    - name: Upload toolchain artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: openwrt-toolchain
+        path: |
+          ./staging_dir/toolchain-*
+          ./tmp/.buildinfo-toolchain-*
+        if-no-files-found: error
+        retention-days: 7
+
+  build_firmware:
+    name: Build Firmware
+    needs: build_toolchain
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Initialize environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache git libncurses5-dev libssl-dev python3 unzip
+
+    - name: Download toolchain artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: openwrt-toolchain
+        path: ./
+
+    - name: Setup cache for firmware
+      uses: actions/cache@v3
+      with:
+        path: |
+          ./bin/targets/*
+          ./tmp/.buildinfo-firmware-*
+        key: ${{ runner.os }}-firmware-${{ hashFiles('**/Makefile', '**/.config', 'config/default.config') }}
+        restore-keys: |
+          ${{ runner.os }}-firmware-
+
+    - name: Configure OpenWrt for firmware
+      run: |
+        make defconfig
+        # 加载默认配置（或从 config/default.config 加载）
+        if [ -f "config/default.config" ]; then
+          cp config/default.config .config
+        fi
+        # 应用自定义配置（通过 diy-script.sh）
+        if [ -f "diy-script.sh" ]; then
+          bash diy-script.sh
+        fi
+
+    - name: Build firmware
+      run: |
+        make target/compile -j$(nproc)
+
+    - name: Upload firmware artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: openwrt-firmware
+        path: |
+          ./bin/targets/*/*/*.bin
+          ./bin/targets/*/*/*.img
+          ./tmp/.buildinfo-firmware-*
+        if-no-files-found: error
+        retention-days: 7
+
+  build_packages:
+    name: Build Packages
+    needs: build_firmware
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Initialize environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache git libncurses5-dev libssl-dev python3 unzip
+
+    - name: Download toolchain and firmware artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: openwrt-toolchain
+        path: ./
+
+    - name: Setup cache for packages
+      uses: actions/cache@v3
+      with:
+        path: |
+          ./bin/packages/*
+          ./tmp/.buildinfo-packages-*
+        key: ${{ runner.os }}-packages-${{ hashFiles('**/Makefile', '**/.config', 'config/default.config') }}
+        restore-keys: |
+          ${{ runner.os }}-packages-
+
+    - name: Configure OpenWrt for packages
+      run: |
+        make defconfig
+        # 启用需要的软件包（通过 diy-script.sh 配置）
+        if [ -f "diy-script.sh" ]; then
+          bash diy-script.sh
+        fi
+
+    - name: Build packages
+      run: |
+        make package/luci/compile package/kmod-usb-storage/compile -j$(nproc)  # 示例包，实际由 diy-script.sh 控制
+
+    - name: Upload packages artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: openwrt-packages
+        path: |
+          ./bin/packages/*/*/*.ipk
+          ./tmp/.buildinfo-packages-*
+        if-no-files-found: error
+        retention-days: 7
